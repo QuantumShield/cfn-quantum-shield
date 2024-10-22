@@ -1,0 +1,399 @@
+---
+AWSTemplateFormatVersion: 2010-09-09
+Description: >-
+  This template deploys a Quantum Shield instance in a public subnet
+  with an Elastic IP attached. **WARNING** This template creates an
+  EC2 instance and related resources. You will be billed for the AWS
+  resources used if you create a stack from this template.
+  (qs-1s1eguak1)
+
+Parameters:
+  KeyPairName:
+    Description: Name of EC2 key pair for Quantum Shield instance. If left blank, a new KeyPair will be created and used.
+    Type: String
+  PublicSubnetId:
+    Description: Public subnet to deploy Quantum Shield into.
+    Type: AWS::EC2::Subnet::Id
+    MinLength: 1
+  VpcId:
+    Description: VPC containing the public subnet specified.
+    Type: AWS::EC2::VPC::Id
+    MinLength: 1
+  InstanceType:
+    AllowedValues:
+    - t3.small
+    - t3.medium
+    - t3.large
+    - t3.xlarge
+    - t2.small
+    - t2.medium
+    - t2.large
+    - t2.xlarge
+    - m5.large
+    - m5.xlarge
+    - m5.2xlarge
+    - m5.4xlarge
+    - m5.8xlarge
+    - m5.12xlarge
+    - m4.large
+    - m4.xlarge
+    - m4.2xlarge
+    - m4.4xlarge
+    - m4.10xlarge
+    - c5.large
+    - c5.xlarge
+    - c5.2xlarge
+    - c5.4xlarge
+    - c5.9xlarge
+    - c5.12xlarge
+    - c4.large
+    - c4.xlarge
+    - c4.2xlarge
+    - c4.4xlarge
+    - c4.8xlarge
+    - r5.large
+    - r5.xlarge
+    - r5.2xlarge
+    - r5.4xlarge
+    ConstraintDescription: Must contain valid instance type
+    Default: c5.large
+    Description: Type of EC2 instance for the workload instances.
+    Type: String
+  ElasticIPAllocationId:
+    Description: AllocationId for existing Elastic IP that FQDN is already pointing at. If not specified, a new Elastic IP will be created.
+    Type: String
+  FQDN:
+    Description: Full domain name that Quantum Shield will operate as.
+    Type: String
+  UpstreamEndpoint:
+    AllowedPattern: (https?://.+)?
+    ConstraintDescription: Must begin with http:// or https://.
+    Description: URL for Quantum Shield to proxy requests to. This can be an load balancer DNS name or even an IP.
+    Type: String
+
+Rules:
+  SubnetsInVPC:
+    Assertions:
+    - Assert: !EachMemberIn
+      - !ValueOfAll ['AWS::EC2::Subnet::Id', 'VpcId']
+      - !RefAll AWS::EC2::VPC::Id
+
+Conditions:
+  CreateKeyPair: !Equals [!Ref KeyPairName, '']
+  CreateEIP: !Equals [!Ref ElasticIPAllocationId, '']
+  UseEIP: !Not [!Equals [!Ref ElasticIPAllocationId, '']]
+
+Mappings:
+  AWSAMIRegionMap:
+    AMI:
+      QNTMSHLD: lastwall-quantum-shield-ami-2024-10-03T15-10-39.280Z-prod-e2d2tdy3cyfle
+    ap-southeast-2:
+      QNTMSHLD: ami-0d222ed15f9460df3
+    ca-central-1:
+      QNTMSHLD: ami-033b050a08cca6652
+    eu-central-1:
+      QNTMSHLD: ami-0f5a065bbce552116
+    eu-west-1:
+      QNTMSHLD: ami-0f33197b77f966c42
+    eu-west-2:
+      QNTMSHLD: ami-0cc364552344b6d41
+    eu-west-3:
+      QNTMSHLD: ami-08097b3ea92a5b469
+    eu-north-1:
+      QNTMSHLD: ami-0e04c5692f751c244
+    us-east-1:
+      QNTMSHLD: ami-0245042e723f97f13
+    us-east-2:
+      QNTMSHLD: ami-00f40efd5cc87737d
+    us-west-1:
+      QNTMSHLD: ami-04b9eb87eb69fbde9
+    us-west-2:
+      QNTMSHLD: ami-0ede864bb3dc84413
+    us-gov-east-1:
+      QNTMSHLD: ami-0ffc2a571d88d03bf
+    us-gov-west-1:
+      QNTMSHLD: ami-0674c751efe53a0cd
+
+Resources:
+  KeyPair:
+    Type: AWS::EC2::KeyPair
+    Condition: CreateKeyPair
+    Properties:
+      KeyName: QuantumShield
+
+  EIP:
+    Type: AWS::EC2::EIP
+    Condition: CreateEIP
+    Properties:
+      InstanceId: !Ref Instance
+      Tags:
+      - Key: Name
+        Value: QuantumShield
+
+  EIPAssociation:
+    Type: AWS::EC2::EIPAssociation
+    Condition: UseEIP
+    Properties:
+      InstanceId: !Ref Instance
+      AllocationId: !Ref ElasticIPAllocationId
+
+  SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow access to Quantum Shield
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: 80
+        ToPort: 80
+        CidrIp: 0.0.0.0/0
+      - IpProtocol: tcp
+        FromPort: 443
+        ToPort: 443
+        CidrIp: 0.0.0.0/0
+
+  Role:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - ec2.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Path: /
+      ManagedPolicyArns:
+      - !Sub arn:${AWS::Partition}:iam::aws:policy/AmazonSSMManagedInstanceCore
+
+  InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: /
+      Roles:
+      - !Ref Role
+
+  Instance:
+    Type: AWS::EC2::Instance
+    Metadata:
+      AWS::CloudFormation::Init:
+        configSets:
+          default:
+          - base
+          - nginx
+          nginx:
+          - nginx
+          certbot:
+          - certbot
+        base:
+          packages:
+            yum:
+              aws-cfn-bootstrap: []
+              dnf-automatic: []
+          services:
+            systemd:
+              cfn-hup:
+                enabled: true
+                ensureRunning: true
+                files:
+                - /etc/cfn/cfn-hup.conf
+                - /etc/cfn/hooks.d/*
+              dnf-automatic.timer:
+                enabled: true
+                ensureRunning: true
+                files:
+                - /etc/dnf/automatic.conf
+          files:
+            /etc/dnf/automatic.conf:
+              mode: '000644'
+              owner: root
+              group: root
+              content: !Sub |
+                [commands]
+                upgrade_type = security
+                download_updates = yes
+                apply_updates = yes
+            /etc/cfn/cfn-hup.conf:
+              mode: '000400'
+              owner: root
+              group: root
+              content: !Sub |
+                [main]
+                stack=${AWS::StackId}
+                region=${AWS::Region}
+                interval=5
+                verbose=true
+            /etc/cfn/hooks.d/cfn-auto-reloader.conf:
+              mode: '000400'
+              owner: root
+              group: root
+              content: !Sub |
+                [cfn-auto-reloader-hook]
+                triggers=post.update
+                path=Resources.Instance
+                action=/opt/aws/bin/cfn-init -v --stack ${AWS::StackName} --resource Instance --configsets nginx --region ${AWS::Region}
+        nginx:
+          commands:
+            nginx:
+              command: !Sub |
+                mkdir -p /usr/share/nginx/.well-known/acme-challenge
+
+                if [ -n "${UpstreamEndpoint}" ]; then
+                  ln -sf /etc/nginx/available.d/proxy.conf /etc/nginx/conf.d/default.conf
+                else
+                  ln -sf /etc/nginx/available.d/quickstart.conf /etc/nginx/conf.d/default.conf
+                fi
+
+                systemctl restart nginx
+
+                if [ -n "${FQDN}" ]; then
+                  cfn-init --stack ${AWS::StackName} --resource Instance --configsets certbot    --region ${AWS::Region}
+                fi
+          files:
+            /etc/nginx/available.d/proxy.conf:
+              mode: '000644'
+              owner: root
+              group: root
+              content: !Sub |
+                server {
+                  listen  80 default_server;
+                  listen  443 ssl;
+
+                  ssl_certificate      /etc/certs/nginx.pem;
+                  ssl_certificate_key  /etc/certs/nginx.key;
+
+                  ssl_session_cache    shared:SSL:1m;
+                  ssl_session_timeout  5m;
+
+                  ssl_ciphers  HIGH:!aNULL:!MD5;
+                  ssl_prefer_server_ciphers  on;
+
+                  ssl_protocols   TLSv1.3 TLSv1.2;                     # Enable both TLSv1.3 and TLSv1.2
+                  ssl_ecdh_curve  X25519Kyber768Draft00:X25519:P-256;  # Enable Kyber with fallback to classical X25519 or prime order curve
+
+                  location ^~ /.well-known/acme-challenge/ {
+                    root     /usr/share/nginx/html;
+
+                    if_modified_since  off;
+                    expires            off;
+                    etag               off;
+                  }
+
+                  location / {
+                    #resolver            8.8.8.8;
+                    proxy_pass          ${UpstreamEndpoint};
+                    proxy_no_cache      1;
+                    proxy_cache_bypass  1;
+                    proxy_set_header    X-Forwarded-For $proxy_add_x_forwarded_for;
+
+                    if_modified_since  off;
+                    expires            off;
+                    etag               off;
+                  }
+
+                  error_page  500 502 503 504  /50x.html;
+                  location = /50x.html {
+                    root  /usr/share/nginx/html;
+                  }
+                }
+            /etc/nginx/available.d/quickstart.conf:
+              mode: '000644'
+              owner: root
+              group: root
+              content: !Sub |
+                server {
+                  listen  80 default_server;
+                  listen  443 ssl;
+
+                  ssl_certificate      /etc/certs/nginx.pem;
+                  ssl_certificate_key  /etc/certs/nginx.key;
+
+                  ssl_session_cache    shared:SSL:1m;
+                  ssl_session_timeout  5m;
+
+                  ssl_ciphers  HIGH:!aNULL:!MD5;
+                  ssl_prefer_server_ciphers  on;
+
+                  ssl_protocols   TLSv1.3 TLSv1.2;                     # Enable both TLSv1.3 and TLSv1.2
+                  ssl_ecdh_curve  X25519Kyber768Draft00:X25519:P-256;  # Enable Kyber with fallback to classical X25519 or prime order curve
+
+                  location ^~ /.well-known/acme-challenge/ {
+                    root     /usr/share/nginx/html;
+
+                    if_modified_since  off;
+                    expires            off;
+                    etag               off;
+                  }
+
+                  location / {
+                    root   /usr/share/nginx/html;
+                    index  index.html index.htm;
+                  }
+
+                  error_page  500 502 503 504  /50x.html;
+                  location = /50x.html {
+                    root  /usr/share/nginx/html;
+                  }
+                }
+          services:
+            systemd:
+              nginx:
+                enabled: true
+                ensureRunning: true
+                files:
+                - /etc/nginx/nginx.conf
+                - /etc/nginx/conf.d/default.conf
+                sources:
+                - /usr/share/nginx/html
+        certbot:
+          packages:
+            yum:
+              python3-certbot-nginx: []
+              cronie: []
+          commands:
+            certbot:
+              command: !Sub |
+                certbot -a webroot -i nginx -w /usr/share/nginx/html -d ${FQDN} --register-unsafely-without-email --agree-tos --non-interactive --keep-until-expiring
+          files:
+            /etc/cron.d/certbot:
+              mode: '000644'
+              owner: root
+              group: root
+              content: !Sub |
+                0 3 * * * root /usr/bin/certbot renew --quiet
+    CreationPolicy:
+      ResourceSignal:
+        Timeout: PT15M
+    Properties:
+      KeyName: !If [CreateKeyPair, !Ref KeyPair, !Ref KeyPairName]
+      ImageId: !FindInMap
+      - AWSAMIRegionMap
+      - !Ref AWS::Region
+      - QNTMSHLD
+      IamInstanceProfile: !Ref InstanceProfile
+      InstanceType: !Ref InstanceType
+      SubnetId: !Ref PublicSubnetId
+      SecurityGroupIds:
+      - !GetAtt SecurityGroup.GroupId
+      UserData: !Base64
+        Fn::Sub: |
+          #!/bin/bash
+          cfn-init --stack ${AWS::StackName} --resource Instance --configsets default --region ${AWS::Region}
+          if [[ $? -eq 0 ]]; then
+            # signal the status from cfn-init if successful
+            cfn-signal -e 0 --stack ${AWS::StackName} --resource Instance --region ${AWS::Region}
+          fi
+      Tags:
+      - Key: Name
+        Value: QuantumShield
+      - Key: FQDN
+        Value: !Ref FQDN
+      - Key: UpstreamEndpoint
+        Value: !Ref UpstreamEndpoint
+
+Outputs:
+  ElasticIP:
+    Description: Elastic IP created and assigned to Quantum Shield
+    Value: !GetAtt EIP.PublicIp
+    Condition: CreateEIP
